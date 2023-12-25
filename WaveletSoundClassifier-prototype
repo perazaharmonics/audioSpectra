@@ -13,12 +13,6 @@ Author: Josué Enrique Peraza Velázquez
 
 import numpy as np
 import pywt
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score
-
-import numpy as np
-import pywt
 import sounddevice as sd
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
@@ -49,11 +43,14 @@ audio_signal = np.array(buffer)
 # Coiflet 5 wavelet decomposition
 coeffs = pywt.wavedec(audio_signal, 'coif5', level=5)
 
-# Concatenate the coefficients into a feature vector
+# Extract features from the wavelet coefficients
 coiflet_features = np.concatenate(coeffs)
 
+# Apply inverse wavelet transform to reconstruct denoised signal
+denoised_signal = pywt.waverec(coeffs, 'coif5')
+
 # Assuming a binary classification task (replace with your own labels)
-labels = np.ones(len(coiflet_features))  # Wavelet Decomposition Feature Levels Indexed
+labels = np.ones(len(coiflet_features))  # Replace with appropriate labels
 
 # Split dataset into training and testing sets
 X_train, X_test, y_train, y_test = train_test_split(coiflet_features, labels, test_size=0.2, random_state=42)
@@ -66,7 +63,12 @@ pipeline = Pipeline([
 # Train the model using the pipeline
 pipeline.fit(X_train.reshape(-1, 1), y_train)  # Reshape to 2D array
 
+# Apply inverse wavelet transform to reconstruct denoised test set
+denoised_test_set = pywt.waverec(X_test.reshape(-1, 1), 'coif5')
+
+# Use denoised test set features for prediction
+y_pred = pipeline.predict(denoised_test_set.reshape(-1, 1))
+
 # Evaluate the model
-y_pred = pipeline.predict(X_test.reshape(-1, 1))  # Reshape to 2D array
 accuracy = accuracy_score(y_test, y_pred)
 print(f"Accuracy: {accuracy}")
