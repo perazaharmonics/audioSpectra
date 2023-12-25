@@ -1,3 +1,16 @@
+"""
+DESCRIPTION: Audio engine learning model prototype.
+The idea relies in wavelet decomposition of the incoming sound signal.
+As well known, the Wavelet Transform and its inverse can provide the weights of 
+any signal. Thus - in idea, getting the weights the satisfy the equation at the 
+TF Wave Level.
+
+Author: Josué Ennrique Peraza
+
+
+""""
+
+
 import numpy as np
 import pywt
 from sklearn.model_selection import train_test_split
