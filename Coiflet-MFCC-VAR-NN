@@ -1,0 +1,295 @@
+import numpy as np
+import librosa
+import pywt
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
+from sklearn.svm import SVC
+from sklearn.decomposition import PCA
+from sklearn.metrics import confusion_matrix, accuracy_score
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+from keras.losses import binary_crossentropy
+from keras import metrics
+import os
+import numpy as np
+import pywt
+import librosa
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+from sklearn.preprocessing import StandardScaler
+
+# Path to the directory containing wave files
+file_path = "./clarinet.wav"
+param_range = [0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]
+param_grid = [{'svc__C': param_range, 'svc__kernel': ['linear']}, {'svc__C': param_range, 'svc__gamma': param_range, 'svc__kernel': ['rbf']}]
+""" 
+==============================================================================DSP SECTION==================================================="""
+
+
+"""----------------------------AUDIO READ---------------------------------"""
+
+# Function to load a wave file using librosa
+def load_wave_file(sound_file, duration, sample_rate):
+    # Load the audio file
+    y, sr = librosa.load(file_path, sr=sample_rate, duration=duration, mono=True, offset=0.0, dtype=np.float32, res_type='kaiser_best')
+    return y
+
+# Callback function to process audio input
+def callback(indata, frames, time, status):
+    if status:
+        print(status, flush=True)
+    audio_signal.extend(indata[:, 0])
+
+# Duration and sample rate
+duration = 1  # seconds
+sample_rate = 44100  # samples per second
+
+
+"""--------------------------------------Bufferize--------------------------------------"""
+# Specify the filename you want to read (change this to the specific file you want)
+file_path = "./clarinet.wav"
+
+# Check if the file exists
+if not os.path.isfile(file_path):
+    raise FileNotFoundError("File not found.")
+
+# Load the wave file using librosa
+buffer, sr = librosa.load(file_path, sr=sample_rate, mono=True, offset=0.0, duration=None, dtype=np.float32, res_type='kaiser_best')
+buffer = np.array(buffer)
+# Normalize the signal
+audio_signal = buffer / np.max(np.abs(buffer))
+
+
+# Reshape the buffer
+audio_signal = buffer.reshape(1, -1)
+
+# Set buffer to desired length
+desired_length = 88866  # 1 second of audio at 44100 Hz sample rate
+
+# Check the current length of the audio_signal
+import matplotlib.pyplot as plt
+current_length = len(audio_signal[0])
+print("Current Length:", current_length)
+
+# Zero pad the buffer to match the desired length
+if current_length < desired_length:
+    # If the current length is less than the desired length, zero-pad the buffer to match the desired length.
+    audio_signal = np.pad(audio_signal, ((0, 0), (0, desired_length - current_length)))
+    print("New Length:", len(audio_signal[0]))
+elif current_length > desired_length - 1:
+    audio_signal = audio_signal[:, :desired_length]
+
+# Convert the audio_signal to a NumPy array
+audio_signal = np.array(audio_signal)
+print("New Length:", len(audio_signal[0]))
+
+"""-----------------------------WAVELET DECOMPOSITION SECTION-----------------------"""
+
+# Discrete Coiflet 5 wavelet decomposition with level 3
+coeffs = pywt.wavedec(audio_signal, 'coif5', level=5)
+approx_coeffs = coeffs[0]  # This is the approximation coefficients array
+detail_coeffs = coeffs[1:]  # This is a list of detail coefficients arrays
+coiflet_features = np.concatenate(detail_coeffs, axis=1)
+print("Signal Decomposed /n")
+padded_approx_coeffs = np.pad(approx_coeffs, ((0, 0), (0, len(detail_coeffs) - len(approx_coeffs))), mode='constant')
+# Extract features from the wavelet coefficients
+coiflet_features = np.concatenate(detail_coeffs, axis=1)
+approx_features = padded_approx_coeffs
+print("Coiflet features Extracted")
+print("Coiflet Features Shape:", coiflet_features.shape)
+# Reshape input data for VAE (Neural Network Model)
+coiflet_features = coiflet_features.reshape(-1, 1)
+approx_features = approx_features.reshape(-1, 1)
+print("Coiflet Features Shape:", coiflet_features.shape)
+
+# Get temporal features from the wavelet coefficients decomposition
+def calculate_zcr(wavelet_coeff):
+    zero_crossings = np.where(np.diff(np.sign(wavelet_coeff)))[0]
+    return len(zero_crossings) / len(wavelet_coeff)
+
+def calculate_rms(wavelet_coeff):
+    return np.sqrt(np.mean(np.square(wavelet_coeff)))
+
+zcr_subbands = [calculate_zcr(coeff) for coeff in detail_coeffs]
+rms_subbands = [calculate_rms(coeff) for coeff in detail_coeffs]
+print("ZCR Subbands:", zcr_subbands)
+temporal_features = np.array(zcr_subbands + rms_subbands)
+print("Temporal Features Shape:", temporal_features.shape)
+# Normalize the temporal features
+temporal_features = np.array(zcr_subbands + rms_subbands).reshape(-1, 1)
+print("Temporal Features Shape:", temporal_features.shape)
+if temporal_features.shape[0] == 0:
+    raise ValueError("No temporal features found.")
+
+scaler = StandardScaler()
+normalized_temporal_features = scaler.fit_transform(temporal_features).flatten()
+
+if normalized_temporal_features.shape[0] == 0:
+    raise ValueError("No normalized temporal features found.")
+
+feature_set = normalized_temporal_features
+
+"""*******************************SPECTRAL MODES SECTION*********************************"""
+mfcc_features = librosa.feature.mfcc(y=audio_signal, sr=sr, n_mfcc=11, dct_type=2, norm='ortho', lifter=0, n_fft=2048, hop_length=512, htk=False)
+mfcc_features_2d = mfcc_features.reshape(-1, 1)
+print("MFCC: \n", mfcc_features)
+print("MFCC Features Shape: \n", mfcc_features.shape)
+delta_mfccs = librosa.feature.delta(mfcc_features)
+print("1st order derivative MFCC: \n", delta_mfccs)
+delta2_mfccs = librosa.feature.delta(mfcc_features, order=2)
+print("2nd order derivative MFCC: \n", delta2_mfccs)
+spectral_centroid = librosa.feature.spectral_centroid(y=feature_set, sr=sample_rate)[0]
+spectral_centroid_2d = spectral_centroid.reshape(1, -1)
+
+print("Spectral Centroid: \n", spectral_centroid)
+spectral_bandwidth = librosa.feature.spectral_bandwidth(y=feature_set, sr=sample_rate)[0]
+spectral_bandwidth_2d = spectral_bandwidth.reshape(1, -1)
+
+print("Spectral Bandwidth: \n", spectral_bandwidth)
+spectral_rolloff = librosa.feature.spectral_rolloff(y=feature_set, sr=sample_rate)[0]
+spectral_rolloff_2d = spectral_rolloff.reshape(1, -1)
+
+print("Spectral Rolloff: \n", spectral_rolloff)
+spectral_flatness = librosa.feature.spectral_flatness(y=feature_set)[0]
+spectral_flatness_2d = spectral_flatness.reshape(1, -1)
+
+print("Spectral Flatness: \n", spectral_flatness)
+harmonic_features, percussive_features = librosa.effects.hpss(feature_set)
+harmonic_2d = harmonic_features.reshape(1, -1)
+percussive_2d = percussive_features.reshape(1, -1)
+
+print("Harmonic: \n", harmonic_features)
+print("Percussive: \n", percussive_features)
+
+mean_mfccs = np.mean(mfcc_features, axis=1)
+var_mfccs = np.var(mfcc_features, axis=1)
+mean_delta_mfccs = np.mean(delta_mfccs, axis=1)
+var_delta_mfccs = np.var(delta_mfccs, axis=1)
+mean_delta2_mfccs = np.mean(delta2_mfccs, axis=1)
+delta_mfccs_2d = delta_mfccs.reshape(1, -1)
+var_delta2_mfccs = np.var(delta2_mfccs, axis=1)
+delta2_mfccs_2d = delta2_mfccs.reshape(1, -1)
+print("Statistical Data from Spectrum Obtained")
+
+max_cols = max(mfcc_features_2d.shape[1], delta_mfccs_2d.shape[1], delta2_mfccs_2d.shape[1], 
+                spectral_centroid_2d.shape[1], spectral_rolloff_2d.shape[1], 
+                spectral_bandwidth_2d.shape[1], spectral_flatness_2d.shape[1], 
+                harmonic_2d.shape[1], percussive_2d.shape[1])
+print("Max Columns Spectral Feature Space:", max_cols)
+
+def pad_array(arr, max_cols):
+    current_cols = arr.shape[1]
+    if current_cols < max_cols:
+        padding = max_cols - current_cols
+        return np.pad(arr, ((0, 0), (0, padding)), 'constant')
+    else:
+        return arr  # No need to pad if the array already has enough columns
+
+# Pad all the arrays to have the same number of columns
+mfcc_features_2d_pad = pad_array(mfcc_features_2d, max_cols)
+print("Shapes before padding and concatenation:")
+delta_mfccs_2d_pad = pad_array(delta_mfccs_2d.reshape(1, -1), max_cols)
+print("mfcc_features shape:", mfcc_features.shape)
+
+delta2_mfccs_2d_pad = pad_array(delta2_mfccs_2d.reshape(1, -1), max_cols)
+print("delta_mfccs_2d shape:", delta_mfccs_2d.shape)
+
+spectral_centroid_2d_pad = pad_array(spectral_centroid_2d, max_cols)
+print("spectral_centroid_2d shape:", spectral_centroid_2d.shape)
+
+spectral_bandwidth_2d_pad = pad_array(spectral_bandwidth_2d, max_cols)
+print("spectral_rolloff_2d shape:", spectral_rolloff_2d.shape)
+
+spectral_rolloff_2d_pad = pad_array(spectral_rolloff_2d, max_cols)
+print("spectral_bandwidth_2d shape:", spectral_bandwidth_2d.shape)
+
+spectral_flatness_2d_pad = pad_array(spectral_flatness_2d, max_cols)
+print("spectral_flatness_2d shape:", spectral_flatness_2d.shape)
+
+harmonic_2d_pad = pad_array(harmonic_2d, max_cols)
+print("harmonic_2d shape:", harmonic_2d.shape)
+
+percussive_2d_pad = pad_array(percussive_2d, max_cols)
+print("percussive_2d shape:", percussive_2d.shape)
+print("All Features Padded")
+
+# Now, you can concatenate the padded arrays
+all_features = np.concatenate([mfcc_features_2d_pad, delta_mfccs_2d_pad, delta2_mfccs_2d_pad, spectral_centroid_2d_pad, spectral_rolloff_2d_pad, spectral_bandwidth_2d_pad, spectral_flatness_2d_pad, harmonic_2d_pad, percussive_2d_pad], axis=0)
+normalized_all_features = StandardScaler().fit_transform(all_features)
+print("Combined Features Shape:", normalized_all_features.shape)
+
+plt.figure(figsize=(10, 4))
+librosa.display.specshow(mfcc_features, x_axis='time')
+plt.colorbar()
+plt.title('MFCC')
+plt.tight_layout()
+plt.show()
+
+chosen_components = 10
+all_features
+
+labels = np.ones(len(all_features))
+
+print("Class Labels:", labels)
+
+"""
+TODO: Re-add Principal Component Analysis, or another dimensionality reduction technique.
+
+
+"""
+original_dim = all_features.shape[1]
+
+epochs = 3
+batch_size = 512
+latent_dim = 6
+
+encoder_inputs = keras.Input(shape=(original_dim,))
+x = layers.Dense(128, activation="relu")(encoder_inputs)
+x = layers.Dense(64, activation="relu")(x)
+z_mean = layers.Dense(latent_dim, name="z_mean")(x)
+z_log_var = layers.Dense(latent_dim, name="z_log_var")(x)
+concatenated = layers.Concatenate()([z_mean, z_log_var])
+
+class Sampling(layers.Layer):
+    def call(self, inputs):
+        z_mean, z_log_var = inputs
+        batch = tf.shape(z_mean)[0]
+        dim = tf.shape(z_mean)[1]
+        epsilon = tf.keras.backend.random_normal(shape=(batch, dim))
+        return z_mean + tf.exp(0.5 * z_log_var) * epsilon
+
+z = Sampling()([z_mean, z_log_var])
+
+encoder = keras.Model(encoder_inputs, [z_mean, z_log_var, z], name="encoder")
+
+decoder_inputs = keras.Input(shape=(latent_dim,))
+x = layers.Dense(64, activation="relu")(decoder_inputs)
+x = layers.Dense(128, activation="relu")(x)
+decoder_outputs = layers.Dense(original_dim, activation="sigmoid")(x)
+
+decoder = keras.Model(decoder_inputs, decoder_outputs, name="decoder")
+
+vae = keras.Model(encoder_inputs, decoder(encoder(encoder_inputs)[2]))
+
+x_decoded_mean = vae.predict(audio_signal)
+
+print("Reconstructed Output Shape:", x_decoded_mean.shape)
+
+mse_loss = tf.reduce_mean(tf.square(audio_signal - x_decoded_mean))
+kl_loss = - 0.5 * tf.reduce_sum(1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var), axis=-1)
+vae_loss = tf.reduce_mean(mse_loss + kl_loss)
+
+vae.add_loss(vae_loss)
+vae.compile(optimizer="adam")
+
+vae.fit(feature_set, feature_set, epochs=epochs, batch_size=batch_size, validation_split=0.2)
+
+new_latent_points = np.random.normal(size=(1, latent_dim))
+generated_samples = decoder.predict(new_latent_points)
+
+print("Generated Samples Shape:", generated_samples.shape)
