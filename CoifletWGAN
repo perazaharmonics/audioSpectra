@@ -1,0 +1,238 @@
+import numpy as np
+import librosa
+import pywt
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
+from sklearn.svm import SVC
+from sklearn.decomposition import PCA
+from sklearn.metrics import confusion_matrix, accuracy_score
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+from keras.losses import binary_crossentropy
+from keras import metrics
+import os
+import numpy as np
+import pywt
+import librosa
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+from sklearn.preprocessing import StandardScaler
+import cmap as cm
+
+# Path to the directory containing wave files
+file_path = "./Perc-Darabuka-Darabuka_04.wav"
+
+""" 
+==============================================================================DSP SECTION==================================================="""
+
+
+"""----------------------------AUDIO READ---------------------------------"""
+
+# Function to load a wave file using librosa
+def load_wave_file(sound_file, duration, sample_rate):
+    # Load the audio file
+    y, sr = librosa.load(file_path, sr=sample_rate, duration=duration, mono=True, offset=0.0, dtype=np.float32, res_type='kaiser_best')
+    return y
+
+# Callback function to process audio input
+def callback(indata, frames, time, status):
+    if status:
+        print(status, flush=True)
+    audio_signal.extend(indata[:, 0])
+
+# Duration and sample rate
+duration = 1  # seconds
+sample_rate = 44100  # samples per second
+
+
+"""--------------------------------------Bufferize--------------------------------------"""
+# Specify the filename you want to read (change this to the specific file you want)
+file_path = "./clarinet.wav"
+
+# Check if the file exists
+if not os.path.isfile(file_path):
+    raise FileNotFoundError("File not found.")
+
+# Load the wave file using librosa
+buffer, sr = librosa.load(file_path, sr=sample_rate, mono=True, offset=0.0, duration=None, dtype=np.float32, res_type='kaiser_best')
+buffer = np.array(buffer)
+audio_signal = buffer
+# Normalize the signal
+audio_signal = audio_signal / np.max(np.abs(audio_signal))
+
+
+# Reshape the buffer
+audio_signal = audio_signal.reshape(1, -1)
+
+# Set buffer to desired length
+desired_length = 44100  # 1 second of audio at 44100 Hz sample rate
+
+# Check the current length of the audio_signal
+
+current_length = len(audio_signal[0])
+print("Current Length:", current_length)
+
+# Zero pad the buffer to match the desired length
+if current_length < desired_length:
+    # If the current length is less than the desired length, zero-pad the buffer to match the desired length.
+    audio_signal = np.pad(audio_signal, ((0, 0), (0, desired_length - current_length)))
+    print("New Length:", len(audio_signal[0]))
+elif current_length > desired_length - 1:
+    audio_signal = audio_signal[:, :desired_length]
+
+# Convert the audio_signal to a NumPy array
+audio_signal = np.array(audio_signal)
+print("New Length:", len(audio_signal[0]))
+
+"""-----------------------------WAVELET DECOMPOSITION SECTION-----------------------"""
+
+# Discrete Coiflet 5 wavelet decomposition with level 5
+coeffs = pywt.wavedec(audio_signal, 'sym8', level=5)
+print("Coefficients Shape:", coeffs[0].shape)
+print("Approximation Coefficients Shape:", coeffs[1].shape)
+
+approx_coeffs = coeffs[0]  # This is the approximation coefficients array
+detail_coeffs = coeffs[1:]  # This is a list of detail coefficients arrays
+
+# Plot wavelet decomposition
+# Plot the approximation coefficients
+plt.figure(figsize=(10, 2))
+plt.plot(approx_coeffs)
+plt.title('Approximation Coefficients')
+plt.show()
+
+# Plot each level of detail coefficients
+for i, coeff in enumerate(detail_coeffs):
+    plt.figure(figsize=(10, 2))
+    plt.plot(coeff)
+    plt.title(f'Detail Coefficients at Level {i+1}')
+    plt.show()
+
+coiflet_features = np.concatenate(detail_coeffs, axis=1)
+print("Signal Decomposed /n")
+padded_approx_coeffs = np.pad(approx_coeffs, ((0, 0), (0, len(detail_coeffs) - len(approx_coeffs))), mode='constant')
+# Extract features from the wavelet coefficients
+detail_features = np.concatenate(detail_coeffs, axis=1)
+approx_features = padded_approx_coeffs
+print("Coiflet features Extracted")
+print("Coiflet Features Shape:", detail_features.shape)
+# Reshape input data for WGAN training
+detail_features = detail_features.reshape(-1, 1)
+approx_features = approx_features.reshape(-1, 1)
+print("Coiflet Features Shape:", detail_features.shape)
+
+
+"""-----------------------------TEMPORAL MODES SECTION-----------------------"""
+# Get temporal features from the wavelet coefficients decomposition
+def calculate_zcr(wavelet_coeff):
+    zero_crossings = np.where(np.diff(np.sign(wavelet_coeff)))[0]
+    return len(zero_crossings) / len(wavelet_coeff)
+
+def calculate_rms(wavelet_coeff):
+    return np.sqrt(np.mean(np.square(wavelet_coeff)))
+
+zcr_subbands = [calculate_zcr(coeff) for coeff in detail_coeffs]
+rms_subbands = [calculate_rms(coeff) for coeff in detail_coeffs]
+print("ZCR Subbands:", zcr_subbands)
+temporal_features = np.array(zcr_subbands + rms_subbands)
+print("Temporal Features Shape:", temporal_features.shape)
+# Normalize the temporal features
+temporal_features = np.array(zcr_subbands + rms_subbands).reshape(-1, 1)
+print("Temporal Features Shape:", temporal_features.shape)
+if temporal_features.shape[0] == 0:
+    raise ValueError("No temporal features found.")
+
+scaler = StandardScaler()
+normalized_temporal_features = scaler.fit_transform(temporal_features).flatten()
+
+if normalized_temporal_features.shape[0] == 0:
+    raise ValueError("No normalized temporal features found.")
+
+feature_set = [normalized_temporal_features, detail_features, approx_features]
+print("Feature Set Length:", len(feature_set))
+
+
+a = 5 
+pseudo_freq = sr / a # Pseudo frequency for wavelets are equal to center frequency over scale level
+print("Pseudo-Frequencies:", pseudo_freq)
+
+
+
+from matplotlib import colormaps as cm
+import torchaudio
+import torchaudio.transforms as T
+
+
+"""===================================GAN SECTION==================================="""
+import torch 
+from torch.utils.data import DataLoader, TensorDataset
+
+# Preparing the dataset
+
+import torch.nn as nn
+
+labels = np.ones(len(feature_set))
+
+print("Class Labels:", labels)
+
+mfcc_tensor = torch.tensor(feature_set, dtype=torch.float32)
+dataset = TensorDataset(mfcc_tensor)
+
+"""-----------------------------SCALEOGRAM GENERATOR NEURAL NETWORK"""
+# Create a helper function to make the generator and discriminator networks class
+def make_generator_network(input_size, n_filters):
+    model = nn.Sequential(
+        nn.ConvTranspose2d(input_size, n_filters*4, 4, 1, 0, bias = False),
+        nn.BatchNorm2d(n_filters*4),
+        nn.LeakyReLU(0.2),
+        nn.ConvTranspose2d(n_filters*4, n_filters*2, 3, 2, 1, bias = False),
+        nn.BatchNorm2d(n_filters*2),
+        nn.LeakyReLU(0.2),
+        nn.ConvTranspose2d(n_filters*2, n_filters, 4, 2, 1, bias = False),
+        nn.BatchNorm2d(n_filters),
+        nn.LeakyReLU(0.2),
+        nn.ConvTranspose2d(n_filters, 1, 4, 2, 1, bias = False),
+        nn.Tanh()
+    )
+    return model
+
+
+
+def make_wasserstein_critic(n_filters, image_size):
+    model = nn.Sequential(
+        # Input layer: Accepts the generated image from the generator
+        nn.Conv2d(1, n_filters, 4, 2, 1, bias=False),
+        nn.LeakyReLU(0.2, inplace=True),
+
+        # Additional layers: Increasing filters while reducing size
+        nn.Conv2d(n_filters, n_filters * 2, 4, 2, 1, bias=False),
+        nn.BatchNorm2d(n_filters * 2),
+        nn.LeakyReLU(0.2, inplace=True),
+
+        nn.Conv2d(n_filters * 2, n_filters * 4, 4, 2, 1, bias=False),
+        nn.BatchNorm2d(n_filters * 4),
+        nn.LeakyReLU(0.2, inplace=True),
+
+        # Final layer: Flattening and providing a single output score
+        nn.Flatten(),
+        nn.Linear(n_filters * 4 * (image_size // 8) ** 2, 1)
+    )
+    return model
+
+
+def forward(self, x):
+    output = self.network(x)
+    return output.view(-1, 1).squeeze(0)
+
+
+dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
+generator = make_generator_network(input_size=100, n_filters=32)
+critic = make_wasserstein_critic(n_filters=32, image_size=64)
+
+
+        
