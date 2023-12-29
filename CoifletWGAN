@@ -25,34 +25,17 @@ from sklearn.preprocessing import StandardScaler
 import cmap as cm
 
 # Path to the directory containing wave files
-file_path = "./Perc-Darabuka-Darabuka_04.wav"
-
+file_path = "./clarinet.wav"
+# Duration and sample rate
+duration = 10  # seconds
+sample_rate = 44100  # samples per second
 """ 
 ==============================================================================DSP SECTION==================================================="""
 
 
-"""----------------------------AUDIO READ---------------------------------"""
-
-# Function to load a wave file using librosa
-def load_wave_file(sound_file, duration, sample_rate):
-    # Load the audio file
-    y, sr = librosa.load(file_path, sr=sample_rate, duration=duration, mono=True, offset=0.0, dtype=np.float32, res_type='kaiser_best')
-    return y
-
-# Callback function to process audio input
-def callback(indata, frames, time, status):
-    if status:
-        print(status, flush=True)
-    audio_signal.extend(indata[:, 0])
-
-# Duration and sample rate
-duration = 1  # seconds
-sample_rate = 44100  # samples per second
-
-
 """--------------------------------------Bufferize--------------------------------------"""
 # Specify the filename you want to read (change this to the specific file you want)
-file_path = "./clarinet.wav"
+
 
 # Check if the file exists
 if not os.path.isfile(file_path):
@@ -60,45 +43,41 @@ if not os.path.isfile(file_path):
 
 # Load the wave file using librosa
 buffer, sr = librosa.load(file_path, sr=sample_rate, mono=True, offset=0.0, duration=None, dtype=np.float32, res_type='kaiser_best')
-buffer = np.array(buffer)
-audio_signal = buffer
-# Normalize the signal
-audio_signal = audio_signal / np.max(np.abs(audio_signal))
-
-
-# Reshape the buffer
-audio_signal = audio_signal.reshape(1, -1)
-
+audio_signal = np.array(buffer)
+print("Audio Signal Shape:", audio_signal.shape)
 # Set buffer to desired length
 desired_length = 44100  # 1 second of audio at 44100 Hz sample rate
 
 # Check the current length of the audio_signal
 
-current_length = len(audio_signal[0])
+current_length = len(audio_signal)
 print("Current Length:", current_length)
 
 # Zero pad the buffer to match the desired length
 if current_length < desired_length:
     # If the current length is less than the desired length, zero-pad the buffer to match the desired length.
     audio_signal = np.pad(audio_signal, ((0, 0), (0, desired_length - current_length)))
-    print("New Length:", len(audio_signal[0]))
+    print("New Length:", len(audio_signal))
 elif current_length > desired_length - 1:
-    audio_signal = audio_signal[:, :desired_length]
+    audio_signal = audio_signal[desired_length - 1:]
 
 # Convert the audio_signal to a NumPy array
 audio_signal = np.array(audio_signal)
-print("New Length:", len(audio_signal[0]))
+print("New Length:", len(audio_signal))
 
 """-----------------------------WAVELET DECOMPOSITION SECTION-----------------------"""
 
+
 # Discrete Coiflet 5 wavelet decomposition with level 5
-coeffs = pywt.wavedec(audio_signal, 'sym8', level=5)
+coeffs = pywt.wavedec(audio_signal, 'coif8', level=5)
 print("Coefficients Shape:", coeffs[0].shape)
 print("Approximation Coefficients Shape:", coeffs[1].shape)
 
 approx_coeffs = coeffs[0]  # This is the approximation coefficients array
 detail_coeffs = coeffs[1:]  # This is a list of detail coefficients arrays
 
+# Reshape each array in detail_coeffs to be 2D
+detail_coeffs_reshaped = [coeff.reshape(1, -1) for coeff in detail_coeffs]
 # Plot wavelet decomposition
 # Plot the approximation coefficients
 plt.figure(figsize=(10, 2))
@@ -113,18 +92,22 @@ for i, coeff in enumerate(detail_coeffs):
     plt.title(f'Detail Coefficients at Level {i+1}')
     plt.show()
 
-coiflet_features = np.concatenate(detail_coeffs, axis=1)
+coiflet_features = np.concatenate([approx_coeffs.reshape(1, -1)] + detail_coeffs_reshaped, axis=1)
 print("Signal Decomposed /n")
-padded_approx_coeffs = np.pad(approx_coeffs, ((0, 0), (0, len(detail_coeffs) - len(approx_coeffs))), mode='constant')
-# Extract features from the wavelet coefficients
-detail_features = np.concatenate(detail_coeffs, axis=1)
+
+# Calculate the total length of all detail coefficients
+total_detail_length = sum(coeff.size for coeff in detail_coeffs)
+
+# Calculate the padding needed for approximation coefficients
+padding_length = max(0, total_detail_length - approx_coeffs.size)
+
+# Pad the approximation coefficients
+padded_approx_coeffs = np.pad(approx_coeffs, (0, padding_length), mode='constant')# Extract features from the wavelet coefficients
+detail_features = np.concatenate(detail_coeffs, axis=0)
 approx_features = padded_approx_coeffs
 print("Coiflet features Extracted")
 print("Coiflet Features Shape:", detail_features.shape)
-# Reshape input data for WGAN training
-detail_features = detail_features.reshape(-1, 1)
-approx_features = approx_features.reshape(-1, 1)
-print("Coiflet Features Shape:", detail_features.shape)
+
 
 
 """-----------------------------TEMPORAL MODES SECTION-----------------------"""
@@ -161,9 +144,11 @@ a = 5
 pseudo_freq = sr / a # Pseudo frequency for wavelets are equal to center frequency over scale level
 print("Pseudo-Frequencies:", pseudo_freq)
 
+for feature in feature_set:
+    print(np.array(feature).shape)
 
 
-from matplotlib import colormaps as cm
+import torch.optim as optim
 import torchaudio
 import torchaudio.transforms as T
 
@@ -172,55 +157,91 @@ import torchaudio.transforms as T
 import torch 
 from torch.utils.data import DataLoader, TensorDataset
 
-# Preparing the dataset
+def calculate_linear_size(output_coeff_shape, n_filters):
+    # Calculate the size of the tensor after the last Conv2d layer
+    # This depends on your specific architecture and may need to be adjusted
+    size = (output_coeff_shape[1] // 8) * (output_coeff_shape[2] // 8) * (n_filters * 4)
+    return size
 
+"""---------------------POST-PRE PROCESSING OF WAVELET COEFFIECIENTS------------------------------"""
+# Reshape input data for WGAN training
+# Reshape the buffer
+audio_signal = audio_signal.reshape(1, -1)
+detail_features = detail_features.reshape(-1, 1)
+approx_features = approx_features.reshape(-1, 1)
+print("Coiflet Features Shape:", detail_features.shape)
 import torch.nn as nn
 
 labels = np.ones(len(feature_set))
 
 print("Class Labels:", labels)
 
-mfcc_tensor = torch.tensor(feature_set, dtype=torch.float32)
-dataset = TensorDataset(mfcc_tensor)
+# Flatten and pad features
+max_length = max(f.size for f in feature_set)
+padded_features = [np.pad(f.flatten(), (0, max_length - f.size)) for f in feature_set]
+# Convert padded_features to a single numpy array
+feature_array = np.stack(padded_features, axis=0)
 
+# Convert to PyTorch tensors
+feature_tensor = torch.tensor(feature_array, dtype=torch.float32)
+labels_tensor = torch.tensor(labels, dtype=torch.float32)
+
+# Create the TensorDataset
+dataset = TensorDataset(feature_tensor, labels_tensor)
+
+# DataLoader
+dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
 """-----------------------------SCALEOGRAM GENERATOR NEURAL NETWORK"""
 # Create a helper function to make the generator and discriminator networks class
-def make_generator_network(input_size, n_filters):
+import torch.nn as nn
+
+import torch.nn as nn
+
+def make_generator_network(input_size, n_filters, output_coeff_shape):
     model = nn.Sequential(
-        nn.ConvTranspose2d(input_size, n_filters*4, 4, 1, 0, bias = False),
-        nn.BatchNorm2d(n_filters*4),
+        # First layer: Transforming input noise vector
+        nn.ConvTranspose2d(input_size, n_filters * 4, kernel_size=4, stride=1, padding=0, bias=False),
+        nn.BatchNorm2d(n_filters * 4),
         nn.LeakyReLU(0.2),
-        nn.ConvTranspose2d(n_filters*4, n_filters*2, 3, 2, 1, bias = False),
-        nn.BatchNorm2d(n_filters*2),
+
+        # Increasing spatial dimensions while reducing depth
+        nn.ConvTranspose2d(n_filters * 4, n_filters * 2, kernel_size=4, stride=2, padding=1, bias=False),
+        nn.BatchNorm2d(n_filters * 2),
         nn.LeakyReLU(0.2),
-        nn.ConvTranspose2d(n_filters*2, n_filters, 4, 2, 1, bias = False),
+
+        nn.ConvTranspose2d(n_filters * 2, n_filters, kernel_size=4, stride=2, padding=1, bias=False),
         nn.BatchNorm2d(n_filters),
         nn.LeakyReLU(0.2),
-        nn.ConvTranspose2d(n_filters, 1, 4, 2, 1, bias = False),
-        nn.Tanh()
+
+        # Final layer: Adjust to output the desired wavelet coefficient shape
+        nn.ConvTranspose2d(n_filters, output_coeff_shape[0], kernel_size=(output_coeff_shape[1], 1), stride=1, padding=0, bias=False),
+        nn.Tanh()  # Or another suitable activation function
     )
     return model
 
 
 
-def make_wasserstein_critic(n_filters, image_size):
+"""------------------------------SCALOGRAM WASSERSTEIN CRITIC NEURAL NETWORK"""
+
+def make_wasserstein_critic(n_filters, output_coeff_shape):
     model = nn.Sequential(
-        # Input layer: Accepts the generated image from the generator
-        nn.Conv2d(1, n_filters, 4, 2, 1, bias=False),
+        # Input layer: Adjust to accept the generated output from the generator
+        nn.Conv2d(output_coeff_shape[0], n_filters, kernel_size=4, stride=2, padding=1, bias=False),
         nn.LeakyReLU(0.2, inplace=True),
 
         # Additional layers: Increasing filters while reducing size
-        nn.Conv2d(n_filters, n_filters * 2, 4, 2, 1, bias=False),
+        nn.Conv2d(n_filters, n_filters * 2, kernel_size=4, stride=2, padding=1, bias=False),
         nn.BatchNorm2d(n_filters * 2),
         nn.LeakyReLU(0.2, inplace=True),
 
-        nn.Conv2d(n_filters * 2, n_filters * 4, 4, 2, 1, bias=False),
+        nn.Conv2d(n_filters * 2, n_filters * 4, kernel_size=4, stride=2, padding=1, bias=False),
         nn.BatchNorm2d(n_filters * 4),
         nn.LeakyReLU(0.2, inplace=True),
 
         # Final layer: Flattening and providing a single output score
         nn.Flatten(),
-        nn.Linear(n_filters * 4 * (image_size // 8) ** 2, 1)
+        # Adjust the linear layer to match the flattened size
+        nn.Linear(calculate_linear_size(output_coeff_shape, n_filters), 1)
     )
     return model
 
@@ -230,9 +251,70 @@ def forward(self, x):
     return output.view(-1, 1).squeeze(0)
 
 
-dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
-generator = make_generator_network(input_size=100, n_filters=32)
+
+
+# Hyperparameters
+critic_iterations = 5
+clip_value = 0.01  # Clip value for WGAN
+learning_rate = 0.0002
+epochs = 100
+input_size = 100 # Size of the input noise vector for the generator
+batch_size = 64  
+n_filters = 16  # Number of filters in the first layer of G and D  
+kernel_size = (4, 4) # Kernel size for the convolutions
+
+height = a + 1 # Height of the scalogram
+width = len(detail_features) # Width of the scalogram
+output_coeff_shape = (height, width)  # Shape of the output coefficient array
+# Define Networks
+generator = make_generator_network(input_size=input_size, n_filters=n_filters, output_coeff_shape=output_coeff_shape)
 critic = make_wasserstein_critic(n_filters=32, image_size=64)
 
+# Optimizers
+optimizer_gen = optim.RMSprop(generator.parameters(), lr=learning_rate)
+optimizer_critic = optim.RMSprop(critic.parameters(), lr=learning_rate)
 
-        
+# Training Loop
+for epoch in range(epochs):
+    for i, data in enumerate(dataloader, 0):
+        # ---------------------
+        # Train the Critic
+        # ---------------------
+        for _ in range(critic_iterations):
+            critic.zero_grad()
+
+            # Train with real data
+            real_data = data[0].to('cuda')
+            output_real = critic(real_data).mean()
+            
+            # Train with fake data
+            noise = torch.randn(batch_size, input_size, 1, 1).to('cuda')
+
+            fake_data = generator(noise).detach()  # Detach to avoid training the generator
+            output_fake = critic(fake_data).mean()
+
+            # Wasserstein loss
+            critic_loss = output_fake - output_real
+            critic_loss.backward()
+            optimizer_critic.step()
+
+            # Clip weights of critic
+            for p in critic.parameters():
+                p.data.clamp_(-clip_value, clip_value)
+
+        # ---------------------
+        # Train the Generator
+        # ---------------------
+        generator.zero_grad()
+
+        # Generate fake data
+        fake_data = generator(noise)
+        output = critic(fake_data).mean()
+
+        # Generator loss (opposite of critic loss)
+        generator_loss = -output
+        generator_loss.backward()
+        optimizer_gen.step()
+
+    # Print/log the losses and save the models if necessary
+    print(f"Epoch [{epoch+1}/{epochs}] | Critic Loss: {critic_loss.item()} | Generator Loss: {generator_loss.item()}")
