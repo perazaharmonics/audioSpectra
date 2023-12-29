@@ -158,10 +158,19 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 def calculate_linear_size(output_coeff_shape, n_filters):
-    # Calculate the size of the tensor after the last Conv2d layer
-    # This depends on your specific architecture and may need to be adjusted
-    size = (output_coeff_shape[1] // 8) * (output_coeff_shape[2] // 8) * (n_filters * 4)
+    # Handling different shapes of output_coeff_shape
+    if len(output_coeff_shape) == 3:
+        # For 3D shapes: (channels, height, width)
+        height, width = output_coeff_shape[1], output_coeff_shape[2]
+    elif len(output_coeff_shape) == 2:
+        # For 2D shapes: (channels, length)
+        height, width = output_coeff_shape[1], 1
+    else:
+        raise ValueError("Unsupported shape for output_coeff_shape")
+
+    size = (height // 8) * (width // 8) * (n_filters * 4)
     return size
+
 
 """---------------------POST-PRE PROCESSING OF WAVELET COEFFIECIENTS------------------------------"""
 # Reshape input data for WGAN training
@@ -195,7 +204,6 @@ dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
 # Create a helper function to make the generator and discriminator networks class
 import torch.nn as nn
 
-import torch.nn as nn
 
 def make_generator_network(input_size, n_filters, output_coeff_shape):
     model = nn.Sequential(
@@ -240,11 +248,9 @@ def make_wasserstein_critic(n_filters, output_coeff_shape):
 
         # Final layer: Flattening and providing a single output score
         nn.Flatten(),
-        # Adjust the linear layer to match the flattened size
         nn.Linear(calculate_linear_size(output_coeff_shape, n_filters), 1)
     )
     return model
-
 
 def forward(self, x):
     output = self.network(x)
@@ -268,7 +274,7 @@ width = len(detail_features) # Width of the scalogram
 output_coeff_shape = (height, width)  # Shape of the output coefficient array
 # Define Networks
 generator = make_generator_network(input_size=input_size, n_filters=n_filters, output_coeff_shape=output_coeff_shape)
-critic = make_wasserstein_critic(n_filters=32, image_size=64)
+critic = make_wasserstein_critic(n_filters=32, output_coeff_shape=output_coeff_shape)
 
 # Optimizers
 optimizer_gen = optim.RMSprop(generator.parameters(), lr=learning_rate)
