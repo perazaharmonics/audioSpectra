@@ -58,6 +58,7 @@ def save_audio(data, filename):
         data /= abs(data).max()
     sf.write(filename, data, SAMPLE_RATE)
 
+
 def pole2cutoff(poles, fs):
     """
     Convert pole locations to real-valued cutoff frequencies for a digital filter.
@@ -73,6 +74,9 @@ def pole2cutoff(poles, fs):
     # Calculate the angle of each pole and convert to cutoff frequency
     theta = np.angle(poles)
     f_cutoff = fs * theta / (2 * np.pi)
+
+    # Ensure frequencies are within the Nyquist range
+    f_cutoff = np.clip(f_cutoff, 0, fs/2)
 
     # Ensure the output is real-valued
     f_cutoff_real = np.real(f_cutoff)
