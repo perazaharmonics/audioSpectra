@@ -89,7 +89,7 @@ def make_sine(freq: float, T: int, sr=SAMPLE_RATE):
 overall_start_time = time.time()
 print(f"Start Time {overall_start_time} seconds.")
 
-#+++++++++++++++++++++++++++++++++++++++++++ GROUND TRUTH MODEL ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+#+++++++++++++++++++++++++++++++++++++++++++ GROUND TRUTH MODEL ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 faust_code = """
 declare filename "untitled.dsp";
 declare name "untitled";
