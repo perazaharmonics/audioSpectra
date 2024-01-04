@@ -58,6 +58,26 @@ def save_audio(data, filename):
         data /= abs(data).max()
     sf.write(filename, data, SAMPLE_RATE)
 
+def pole2cutoff(poles, fs):
+    """
+    Convert pole locations to real-valued cutoff frequencies for a digital filter.
+
+    :param poles: The pole locations in the Z-domain (should be within the unit circle).
+    :param fs: Sampling frequency.
+    :return: Real-valued cutoff frequencies in Hz.
+    """
+    # Ensure that the poles are within the unit circle for stability
+    if np.any(np.abs(poles) >= 1):
+        raise ValueError("All poles must be inside the unit circle for stability.")
+
+    # Calculate the angle of each pole and convert to cutoff frequency
+    theta = np.angle(poles)
+    f_cutoff = fs * theta / (2 * np.pi)
+
+    # Ensure the output is real-valued
+    f_cutoff_real = np.real(f_cutoff)
+    return f_cutoff_real
+
 def make_sine(freq: float, T: int, sr=SAMPLE_RATE):
     """Return sine wave based on freq in Hz and duration T in samples"""
     return jnp.sin(jnp.pi*2.*freq*jnp.arange(T)/sr)
@@ -73,7 +93,7 @@ import("stdfaust.lib");
 myOnePole(x) =  +~(*(-a1)); 
 
  
-a1 = hslider("[0]a1[style:knob]",0.41, -0.93, 0.93, 0.0001);
+a1 = hslider("[0]a1[style:knob][scale:linear]",0.5, -0.93, 0.93, 0.0001);
 
 process = _ : myOnePole(a1);
 """
@@ -188,13 +208,13 @@ show_audio(np.array(audio[0]))
 
 # Training the model
 # Repeat the code much earlier, except create a model whose cutoff is 10,000 Hz.
-init_pole = 0.01 #@param {type: 'number'}
+init_pole = -0.01 #@param {type: 'number'}
 faust_code2 = f"""
 
 import("stdfaust.lib");
 myOnePole(x) = + ~(x * (-a1)); 
 
-a1 = hslider("a1[style:knob]", {init_pole}, -0.93, 0.93, 0.0001);
+a1 = hslider("a1[style:knob][scale:linear]", {init_pole}, -0.93, 0.93, 0.0001);
 
 process = myOnePole(a1);
 
@@ -221,9 +241,11 @@ print('train params:', train_params)
 
 # +++++++++++++++++++++++++++++++++++++++++++ TRAINING MODEL++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 # Adam optimizer parameters
-learning_rate = 2e-5 #@param {type: 'number'} # You can adjust this value
-eta = 0.1  #@param {type: 'number'}# First moment decay rate, often set to 0.9
-gamma = 0.55  #@param {type: 'number'} 
+learning_rate = 1e-3 #@param {type: 'number'} # You can adjust this value
+
+eta = 0.3  # Scale of noise (Noise-SGD papers suggest using a sequence of training where eta = {1.0, 0.1, 0.01}. 
+# Inceasing eta (noise power) at first (1.0) then decreasing down the set helps the model escape local minima.)
+gamma = 0.9  # Similar to SGD momentum
 seed = 42
 # Create Train state
 tx = optax.noisy_sgd(learning_rate, eta, gamma, seed = seed)
@@ -248,7 +270,7 @@ def train_step(state, x, y):
 losses = []
 cutoffs = []
 
-train_steps = 500
+train_steps = 3000 #@param {type: 'integer'}
 train_steps_per_eval = 100
 pbar = tqdm(range(train_steps))
 start_time = time.time()
@@ -265,12 +287,13 @@ for n in pbar:
         # jit_train_inference accepts a batch of one item.
         audio, mod_vars = jit_train_inference({'params': state.params}, noises, T)
         print(list(mod_vars['intermediates'].keys()))
-        cutoff = np.array(mod_vars['intermediates']['dawdreamer/a1'])
+        a1 = np.array(mod_vars['intermediates']['dawdreamer/a1'])
         # the cutoff above is a batch of predicted cutoff values, so we'll take the mean
+        cutoff = pole2cutoff(a1, SAMPLE_RATE)
         cutoff = cutoff.mean()
         losses.append(loss)
         cutoffs.append(cutoff)
-        pbar.set_description(f"cutoff: {cutoff}")
+        pbar.set_description(f"cutoffs: {cutoffs}")
 
 print('Done!')
 
@@ -296,9 +319,10 @@ plt.show()
 plt.figure(figsize =(8, 4))
 
 ax1 = plt.subplot(211)
-ax1.plot(cutoffs)
+ax1.plot()
 ax1.set_title("Cutoff Parameter")
 ax1.set_ylabel("Hz (Linear scale)")
+ax1.set_xlabel("Evaluation steps")
 plt.tick_params('x', labelbottom=False)
 
 ax2 = plt.subplot(212, sharex=ax1)
@@ -308,7 +332,6 @@ ax2.set_xlabel("Evaluation steps")
 ax2.set_yscale('log')
 
 plt.show()
-
 # Pick a single example
 x = noises[0:1]
 y = hidden_model.apply({'params': hidden_params}, x, T)
@@ -357,6 +380,8 @@ y=hidden_model.apply({'params': hidden_params}, x, T)
 # Pick the first param to be the varying parameter as an example
 param_name = list(hidden_params.keys())[0]
 
+
+
 @jax.jit
 def loss_one_sample(params):
     pred, mod_vars = jit_train_inference({'params': params}, x, T)
@@ -373,6 +398,8 @@ batched_hidden_params = jax.tree_map(lambda x: jnp.tile(x, loss_landscape_batch)
 batched_hidden_params = unfreeze(batched_hidden_params)
 batched_hidden_params[param_name] = jnp.linspace(-1, 1, loss_landscape_batch)
 landscape_losses, mod_vars = loss_many_samples(batched_hidden_params)
+
+# Convert pole location to cutoff frequency
 
 plt.figure(figsize=(6, 8))
 
